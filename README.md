@@ -1,1 +1,3 @@
-tk-player
+cli-player
+
+Simple media player using gstreamer
