@@ -4,17 +4,19 @@
 #include <glib.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <termios.h>
 
-typedef struct  {
-    GMainLoop *loop;
-    GstElement *pipeline;
+typedef struct
+{
+  GMainLoop *loop;
+  GstElement *pipeline;
 } player_t;
 
-player_t *player;
 
 static gboolean
-cb_bus (GstBus *bus, GstMessage *msg, gpointer data) {
-    GMainLoop *loop = (GMainLoop *) data;
+cb_bus (GstBus * bus, GstMessage * msg, gpointer data)
+{
+  GMainLoop *loop = (GMainLoop *) data;
 
   switch (GST_MESSAGE_TYPE (msg)) {
 
@@ -23,8 +25,8 @@ cb_bus (GstBus *bus, GstMessage *msg, gpointer data) {
       g_main_loop_quit (loop);
       break;
 
-    case GST_MESSAGE_ERROR: {
-      gchar  *debug;
+    case GST_MESSAGE_ERROR:{
+      gchar *debug;
       GError *error;
 
       gst_message_parse_error (msg, &error, &debug);
@@ -43,113 +45,157 @@ cb_bus (GstBus *bus, GstMessage *msg, gpointer data) {
   return TRUE;
 }
 
+void
+print_menu ()
+{
+  g_print ("\nMenu options\n");
+  g_print ("==============\n");
+  g_print ("%-20s %s", "Pause/Play", "<space>\n");
+  g_print ("%-20s %s", "Quit", "q\n");
+  g_print ("\n\n");
+}
+
 static gboolean
-cb_io_watch (GIOChannel *ch, GIOCondition cond, gpointer user_data) {
+cb_io_watch (GIOChannel * ch, GIOCondition cond, gpointer user_data)
+{
 
-    GIOStatus status;
+  GIOStatus status;
+  player_t *player = (player_t *) user_data;
 
-    if (cond && G_IO_IN) {
-        gchar buf[16];
-        gsize bytes_read;
-        GError *error = NULL;
-        status = g_io_channel_read_chars(ch, buf, sizeof(buf), &bytes_read, &error);
-        if(status == G_IO_STATUS_ERROR) {
-            g_print("Error reading IO..\n");
-        } else if (status == G_IO_STATUS_NORMAL) {
-            switch (buf[0]) {
-            case ' ': 
-            {
-              GstState curr_state, pending_state;
-              gst_element_get_state(player->pipeline, &curr_state, &pending_state, GST_CLOCK_TIME_NONE);
-              //todo: check return val of get_state
-              if (curr_state == GST_STATE_PLAYING || pending_state == GST_STATE_PLAYING) {
-                  gst_element_set_state(player->pipeline, GST_STATE_PAUSED);
-              } else if (curr_state == GST_STATE_PAUSED || pending_state == GST_STATE_PAUSED) {
-                  gst_element_set_state(player->pipeline, GST_STATE_PLAYING);
-              }
-            }  
-            break;
-            }
+  if (cond & G_IO_IN) {
+    gchar buf[16];
+    gsize bytes_read;
+    GError *error = NULL;
+    status =
+        g_io_channel_read_chars (ch, buf, sizeof (buf), &bytes_read, &error);
+    if (status == G_IO_STATUS_ERROR) {
+      g_print ("Error reading IO..\n");
+      return FALSE;
+    } else if (status == G_IO_STATUS_NORMAL) {
+      switch (buf[0]) {
+        case ' ':
+        {
+          GstState curr_state, pending_state;
+          gst_element_get_state (player->pipeline, &curr_state, &pending_state,
+              GST_CLOCK_TIME_NONE);
+          //todo: check return val of get_state
+          if (curr_state == GST_STATE_PLAYING
+              || pending_state == GST_STATE_PLAYING) {
+            gst_element_set_state (player->pipeline, GST_STATE_PAUSED);
+          } else if (curr_state == GST_STATE_PAUSED
+              || pending_state == GST_STATE_PAUSED) {
+            gst_element_set_state (player->pipeline, GST_STATE_PLAYING);
+          }
         }
+          break;
+
+        case 'q':
+        case 'Q':
+          g_main_loop_quit (player->loop);
+          break;
+      }
     }
-    return TRUE;
+    print_menu ();
+  }
+  return TRUE;
 }
 
 static void
-cb_pad_added (GstElement *element, GstPad *pad, gpointer data) {
-    GstPad *sinkpad;
-    GstElement *sink = (GstElement *) data;
+cb_pad_added (GstElement * element, GstPad * pad, gpointer data)
+{
+  GstPad *sinkpad;
+  GstElement *sink = (GstElement *) data;
 
-    g_print ("Dynamic pad created link decoder and sink\n");
-    sinkpad = gst_element_get_static_pad (sink, "sink");
-    gst_pad_link(pad, sinkpad);
+  g_print ("Dynamic pad created link decoder and sink\n");
+  sinkpad = gst_element_get_static_pad (sink, "sink");
+  gst_pad_link (pad, sinkpad);
 
-    gst_object_unref(sinkpad);    
+  gst_object_unref (sinkpad);
 }
 
-int main(int argc, char **argv) {
-    
-    GMainLoop *mainloop;
-    GstElement *pipeline, *src, *decoder, *sink;
-    GstBus *bus;
-    GMainContext *context = NULL;
-    gboolean is_running = FALSE;
-    GIOChannel *io_channel;
+int
+main (int argc, char **argv)
+{
 
-    guint bus_watch_id;
-    gint io_watch_id;
-    
+  GMainLoop *mainloop;
+  GstElement *pipeline, *src, *decoder, *sink;
+  GstBus *bus;
+  GMainContext *context = NULL;
+  gboolean is_running = FALSE;
+  GIOChannel *io_channel;
 
-    gst_init (&argc, &argv);
+  guint bus_watch_id;
+  gint io_watch_id;
+  player_t player;
 
-    mainloop = g_main_loop_new (context, is_running);
+  gst_init (&argc, &argv);
 
-    if (argc != 2) {
-        g_printerr ("Usage : %s <video file path>\n", argv[0]);
-        return -1;
-    }
+  mainloop = g_main_loop_new (context, is_running);
 
-    pipeline = gst_pipeline_new ("cli-player");
-    src = gst_element_factory_make ("filesrc", "filesource0");
-    decoder = gst_element_factory_make ("decodebin", "decodebin0");
-    sink = gst_element_factory_make ("autovideosink", "sink0");
+  if (argc != 2) {
+    g_printerr ("Usage : %s <video file path>\n", argv[0]);
+    return -1;
+  }
 
-    if (!pipeline || !src || !decoder || !sink) {
-        g_printerr ("failed to create one of the elements");
-        return -1;
-    }
+  pipeline = gst_pipeline_new ("cli-player");
+  src = gst_element_factory_make ("filesrc", "filesource0");
+  decoder = gst_element_factory_make ("decodebin", "decodebin0");
+  sink = gst_element_factory_make ("autovideosink", "sink0");
 
-    g_object_set (G_OBJECT (src),"location", argv[1], NULL);
-    
-    bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
-    bus_watch_id = gst_bus_add_watch (bus, cb_bus, mainloop);
-    gst_object_unref (bus);
+  if (!pipeline || !src || !decoder || !sink) {
+    g_printerr ("failed to create one of the elements");
+    return -1;
+  }
 
-    gst_bin_add_many (GST_BIN(pipeline), src, decoder, sink, NULL);
-    
-    gst_element_link (src, decoder);
-      g_signal_connect (decoder, "pad-added", G_CALLBACK (cb_pad_added), sink);
+  g_object_set (G_OBJECT (src), "location", argv[1], NULL);
 
-    io_channel = g_io_channel_unix_new(STDIN_FILENO);
-    player->loop = mainloop;
-    player->pipeline = pipeline;
-    io_watch_id = g_io_add_watch(io_channel, G_IO_IN, cb_io_watch, (gpointer) player);
+  bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
+  bus_watch_id = gst_bus_add_watch (bus, cb_bus, mainloop);
+  gst_object_unref (bus);
 
-    g_print("Starting the pipeline ....\n");
-    gst_element_set_state (pipeline, GST_STATE_PLAYING);
-    g_print ("Running mainloop...\n");
-    g_main_loop_run(mainloop);
+  gst_bin_add_many (GST_BIN (pipeline), src, decoder, sink, NULL);
 
-    g_print ("Returned, stopping playback\n");
-    gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_element_link (src, decoder);
+  g_signal_connect (decoder, "pad-added", G_CALLBACK (cb_pad_added), sink);
 
-    g_print ("Deleting pipeline\n");
-    gst_object_unref (GST_OBJECT (pipeline));
-    g_source_remove (bus_watch_id);
-    g_main_loop_unref (mainloop);
+  struct termios curr_settings, new_settings;
+  if (tcgetattr (STDIN_FILENO, &curr_settings) != 0) {
+    g_print ("Failed to get current term attributes \n");
+    return -1;
+  }
+  new_settings = curr_settings;
+  new_settings.c_lflag &= ~(ICANON | IEXTEN);
+  if (tcsetattr (STDIN_FILENO, TCSAFLUSH, &new_settings)) {
+    g_print ("Failed to set new term attributes \n");
+    return -1;
+  }
+  io_channel = g_io_channel_unix_new (STDIN_FILENO);
 
-    return 0;
+  player.loop = mainloop;
+  player.pipeline = pipeline;
+  int flags;
+  flags = g_io_channel_get_flags (io_channel);
+  g_io_channel_set_flags (io_channel, flags | G_IO_FLAG_NONBLOCK, NULL);
 
+  io_watch_id =
+      g_io_add_watch (io_channel, G_IO_IN, (GIOFunc) cb_io_watch,
+      (gpointer) & player);
+  g_io_channel_unref (io_channel);
+  print_menu ();
 
+  g_print ("Starting the pipeline ....\n");
+  gst_element_set_state (pipeline, GST_STATE_PLAYING);
+  g_print ("Running mainloop...\n");
+  g_main_loop_run (mainloop);
+
+  g_print ("Returned, stopping playback\n");
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+
+  g_print ("Deleting pipeline\n");
+  gst_object_unref (GST_OBJECT (pipeline));
+  g_source_remove (bus_watch_id);
+  g_main_loop_unref (mainloop);
+
+  return 0;
 
 }
