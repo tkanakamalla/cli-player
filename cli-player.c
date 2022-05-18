@@ -1,5 +1,7 @@
+#include "gst/gstcaps.h"
 #include "gst/gstclock.h"
 #include "gst/gstelement.h"
+#include "gst/gstformat.h"
 #include <gst/gst.h>
 #include <glib.h>
 #include <stdio.h>
@@ -10,6 +12,8 @@ typedef struct
 {
   GMainLoop *loop;
   GstElement *pipeline;
+  GstElement *asink;
+  GstElement *vsink;
 } player_t;
 
 
@@ -51,8 +55,25 @@ print_menu ()
   g_print ("\nMenu options\n");
   g_print ("==============\n");
   g_print ("%-20s %s", "Pause/Play", "<space>\n");
+  g_print ("%-20s %s", "Forward", "f\n");
+  g_print ("%-20s %s", "Rewind", "r\n");
   g_print ("%-20s %s", "Quit", "q\n");
   g_print ("\n\n");
+}
+
+static gboolean
+cb_print_position (GstElement * pipeline)
+{
+  gint64 pos, len;
+
+  if (gst_element_query_position (pipeline, GST_FORMAT_TIME, &pos)
+      && gst_element_query_duration (pipeline, GST_FORMAT_TIME, &len)) {
+    g_print (" Time: %" GST_TIME_FORMAT " / %" GST_TIME_FORMAT "\r",
+        GST_TIME_ARGS (pos), GST_TIME_ARGS (len));
+  }
+
+  /* call me again */
+  return TRUE;
 }
 
 static gboolean
@@ -88,7 +109,36 @@ cb_io_watch (GIOChannel * ch, GIOCondition cond, gpointer user_data)
           }
         }
           break;
+        case 'f':
+        {
+          gint64 time_nanoseconds = 5000000000;
+          gint64 curr_pos = 0;
+          gst_element_query_position (player->pipeline, GST_FORMAT_TIME,
+              &curr_pos);
 
+          if (!gst_element_seek_simple (player->pipeline, GST_FORMAT_TIME,
+                  GST_SEEK_FLAG_FLUSH, curr_pos + time_nanoseconds)) {
+            g_print ("\nSeek failed!\n");
+          } else {
+            g_print ("\n Forward 5 sec successful\n");
+          }
+        }
+          break;
+        case 'r':
+        {
+          gint64 time_nanoseconds = 5000000000;
+          gint64 curr_pos = 0;
+          gst_element_query_position (player->pipeline, GST_FORMAT_TIME,
+              &curr_pos);
+
+          if (!gst_element_seek_simple (player->pipeline, GST_FORMAT_TIME,
+                  GST_SEEK_FLAG_FLUSH, curr_pos - time_nanoseconds)) {
+            g_print ("\nSeek failed!\n");
+          } else {
+            g_print ("\nRewind 5 sec successful\n");
+          }
+        }
+          break;
         case 'q':
         case 'Q':
           g_main_loop_quit (player->loop);
@@ -103,13 +153,29 @@ cb_io_watch (GIOChannel * ch, GIOCondition cond, gpointer user_data)
 static void
 cb_pad_added (GstElement * element, GstPad * pad, gpointer data)
 {
-  GstPad *sinkpad;
-  GstElement *sink = (GstElement *) data;
+  GstPad *sinkpad = NULL;
+  GstCaps *caps;
+  gchar *caps_str;
+  player_t *player = (player_t *) data;
 
-  g_print ("Dynamic pad created link decoder and sink\n");
-  sinkpad = gst_element_get_static_pad (sink, "sink");
-  gst_pad_link (pad, sinkpad);
+  g_print ("Dynamic pad created\n");
 
+  caps = gst_pad_get_current_caps (pad);
+  if (caps == NULL) {
+    return;
+  }
+  caps_str = gst_caps_to_string (caps);
+  if (caps_str == NULL)
+    return;
+  g_print ("pad caps : \n%s\n", caps_str);
+  if (g_strstr_len (caps_str, 5, "video")) {
+    sinkpad = gst_element_get_static_pad (player->vsink, "sink");
+    gst_pad_link (pad, sinkpad);
+  } else if (g_strstr_len (caps_str, 5, "audio")) {
+    sinkpad = gst_element_get_static_pad (player->asink, "sink");
+    gst_pad_link (pad, sinkpad);
+  }
+  //todo: g_free(caps_str);
   gst_object_unref (sinkpad);
 }
 
@@ -118,7 +184,7 @@ main (int argc, char **argv)
 {
 
   GMainLoop *mainloop;
-  GstElement *pipeline, *src, *decoder, *sink;
+  GstElement *pipeline, *src, *decoder, *v_sink, *a_sink;
   GstBus *bus;
   GMainContext *context = NULL;
   gboolean is_running = FALSE;
@@ -140,9 +206,9 @@ main (int argc, char **argv)
   pipeline = gst_pipeline_new ("cli-player");
   src = gst_element_factory_make ("filesrc", "filesource0");
   decoder = gst_element_factory_make ("decodebin", "decodebin0");
-  sink = gst_element_factory_make ("autovideosink", "sink0");
-
-  if (!pipeline || !src || !decoder || !sink) {
+  v_sink = gst_element_factory_make ("autovideosink", "vsink0");
+  a_sink = gst_element_factory_make ("autoaudiosink", "asink0");
+  if (!pipeline || !src || !decoder || !a_sink || !v_sink) {
     g_printerr ("failed to create one of the elements");
     return -1;
   }
@@ -152,11 +218,12 @@ main (int argc, char **argv)
   bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
   bus_watch_id = gst_bus_add_watch (bus, cb_bus, mainloop);
   gst_object_unref (bus);
-
-  gst_bin_add_many (GST_BIN (pipeline), src, decoder, sink, NULL);
+  player.asink = a_sink;
+  player.vsink = v_sink;
+  gst_bin_add_many (GST_BIN (pipeline), src, decoder, a_sink, v_sink, NULL);
 
   gst_element_link (src, decoder);
-  g_signal_connect (decoder, "pad-added", G_CALLBACK (cb_pad_added), sink);
+  g_signal_connect (decoder, "pad-added", G_CALLBACK (cb_pad_added), &player);
 
   struct termios curr_settings, new_settings;
   if (tcgetattr (STDIN_FILENO, &curr_settings) != 0) {
@@ -182,6 +249,8 @@ main (int argc, char **argv)
       (gpointer) & player);
   g_io_channel_unref (io_channel);
   print_menu ();
+
+  g_timeout_add (200, (GSourceFunc) cb_print_position, pipeline);
 
   g_print ("Starting the pipeline ....\n");
   gst_element_set_state (pipeline, GST_STATE_PLAYING);
